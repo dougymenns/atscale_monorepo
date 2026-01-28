@@ -1,15 +1,10 @@
 import os
 import requests
-import datetime
-import psycopg2
 import base64
 import hashlib
-import json
 import pandas as pd
 import re
-import boto3
 from sqlalchemy import create_engine, text
-import pytz
 from typing import Any
 import logging
 import warnings
@@ -54,13 +49,13 @@ def standardize_column_name(column_name):
 def everee_create_shift(payload: dict) -> Any:
     """
     Create a timesheet shift in Everee via API
-    
+
     Args:
         payload (dict): Dictionary containing shift details
-        
+
     Returns:
         requests.Response: API response object
-        
+ 
     Raises:
         ValueError: If required environment variables are missing
         requests.RequestException: If API request fails
@@ -114,7 +109,7 @@ def everee_create_shift(payload: dict) -> Any:
         return response
 
     except Exception as ex:
-        logger.error('Custom ERROR(API): while updating timesheet through api: ', ex)
+        logger.exception('Custom ERROR(API): while updating timesheet through api: ', ex)
 
 
 def process_res(response, ct_payload_df):
@@ -124,22 +119,21 @@ def process_res(response, ct_payload_df):
             # Pass response json to function
             res_df = process_success_response(response, ct_payload_df)
             return res_df
-        # if delete then process delete response
-        elif response == 204:
-            print("Hit 204 branch")
-            # Pass response json to function
+        # if delete successful (204) then process delete response
+        elif response.status_code == 204:
+            # Pass response to function
             res_df = process_delete_response(response, ct_payload_df)
             return res_df
         else:
             res_df = process_failed_response(response, ct_payload_df)
             return res_df
     except Exception as ex:
-        logger.error(f'CUSTOM INFO: Unable to process response {ex}')
+        logger.exception(f'CUSTOM INFO: Unable to process response {ex}')
 
 
 def process_success_response(response, ct_payload_df):
     try:
-        print('processing success response')
+        logger.info('Processing success response')
         res_json = response.json()
         res_df = pd.json_normalize(res_json)
 
@@ -173,12 +167,12 @@ def process_success_response(response, ct_payload_df):
         df = pd.concat([res_df,ct_payload_df[ct_cols_needed]], axis=1)
         return df
     except Exception as ex:
-        logger.error('ERROR processing success response', ex)
+        logger.exception('ERROR processing success response', ex)
 
 
 def update_timesheet(worked_shift_id, everee_update_payload):
     try:
-        print('Action type/mehtod: update')
+        logger.info('CUSTOM INFO: Action type/mehtod: update')
         api_token = os.environ.get('EVEREE_API_TOKEN', 'sk_sDxamCz6Ea5JZvmMKyhKkg0DxwsHcp8V')
         tenant_id = os.environ.get('TENANT_ID', '1503')
 
@@ -194,9 +188,9 @@ def update_timesheet(worked_shift_id, everee_update_payload):
                 }
 
         response = requests.put(url, json=everee_update_payload, headers=headers)
-        print('CUSTOM INFO: API response: ', response.status_code)
+        logger.info('CUSTOM INFO: API response: ', response.status_code)
     except Exception as ex:
-        logger.error('Custom ERROR(API): while updating timesheet through api:  ', ex)
+        logger.exception('Custom ERROR(API): while updating timesheet through api:  ', ex)
     return response
 
 
@@ -205,7 +199,7 @@ def process_update(ct_payload_df) -> dict:
     Update timesheet through API
     """
     try:
-        print("Processing Update")
+        logger.info("CUSTOM INFO: Processing Update")
         # extract the payload keys needed to update everee timesheet
         ct_time_activity_id = str(ct_payload_df['ct_time_activity_id'][0])
         worker_id = str(ct_payload_df['worker_id'][0])
@@ -227,8 +221,8 @@ def process_update(ct_payload_df) -> dict:
 
         # if no everee timesheet found in db, and initial action type was update then create a new one
         if everee_df.empty or worked_shift_id is None:
-            print(f"Custom Info(DB): No Everee timesheet found for CT time activity id: {ct_time_activity_id} in database")
-            print(f"Re-trying: create everee timesheet")
+            logger.info(f"Custom INFO(DB): No Everee timesheet found for CT time activity id: {ct_time_activity_id} in database")
+            logger.info(f"CUSTOM INFO: Re-trying: create everee timesheet")
             everee_create_payload = {
                 "workerId": worker_id,
                 "correctionPaymentTimeframe": "NEXT_PAYROLL_PAYMENT",
@@ -245,57 +239,61 @@ def process_update(ct_payload_df) -> dict:
                 "correctionPaymentTimeframe": "NEXT_PAYROLL_PAYMENT",
                 "shiftStartEpochSeconds": shiftStartEpochSeconds,
                 "shiftEndEpochSeconds": shiftEndEpochSeconds,
-                "note": note,
-                # "effectiveHourlyPayRate": {
-                #     "amount": override_rate,
-                #     "currency": "USD"
-                # }
+                "note": note
             }
             print(everee_update_payload)
             update_response = update_timesheet(worked_shift_id, everee_update_payload)
             return update_response
     except Exception as ex:
-        logger.error(ex)
+        logger.exception(ex)
 
 
 def process_failed_response(response, ct_payload_df):
-    res_df = pd.json_normalize(response.json())
+    try:
+        res_df = pd.json_normalize(response.json())
 
-    # standardize column names
-    res_df.columns = [standardize_column_name(col) for col in res_df.columns]
-    error_cols = ['error_code', 'error_message']
-    res_df = res_df[error_cols]
-    res_df['timesheet_sk'] = res_df.apply(compute_md5, axis=1)
+        # standardize column names
+        res_df.columns = [standardize_column_name(col) for col in res_df.columns]
+        error_cols = ['error_code', 'error_message']
+        res_df = res_df[error_cols]
+        res_df['timesheet_sk'] = res_df.apply(compute_md5, axis=1)
 
-    # rename error_code to int_message
-    res_df.rename(columns={
-            'error_message': 'int_message',
-            'error_code': 'status_code'
-            }, inplace=True)
+        # rename error_code to int_message
+        res_df.rename(columns={
+                'error_message': 'int_message',
+                'error_code': 'status_code'
+                }, inplace=True)
+        ct_cols_needed = ['worker_id','external_worker_id', 'full_name', 'ct_time_activity_id',
+                'everee_action_type', 'event_type', 'note']
+        df = pd.concat([res_df,ct_payload_df[ct_cols_needed]], axis=1)
 
-    ct_cols_needed = ['worker_id','external_worker_id', 'full_name', 'ct_time_activity_id',
-                      'everee_action_type', 'event_type', 'note']
-    df = pd.concat([res_df,ct_payload_df[ct_cols_needed]], axis=1)
-    return df
+        # handle case where worked_shift_id might not be present in payload
+        if 'worked_shift_id' not in ct_payload_df.columns:
+            df['worked_shift_id'] = ct_payload_df['ct_time_activity_id'].item() + '_' + 'Null'
+        else:
+            df['worked_shift_id'] = ct_payload_df['worked_shift_id'].item()
+        return df
+    except Exception as ex:
+        logger.exception('ERROR processing failed response', ex)
 
 
 def transform_ct_payload(event):
     '''
     Convert CT payload to DataFrame that will feed into Everee table.
-    
+
     Args:
         event (dict): Input event from Lambda trigger
-        
+
     Returns:
         pd.DataFrame: Transformed DataFrame with required columns
-        
+
     Raises:
         ValueError: If required fields are missing from input
         Exception: For other processing errors
     '''
     if not event:
         logger.error("Custom ERROR: Empty event received")
-        
+
     try:
         ct_payload_df = pd.json_normalize(event)
         if (ct_payload_df['event_type'].str.contains('delete').any() == True) or (ct_payload_df['event_type'].str.contains('declined').any() == True):
@@ -324,8 +322,16 @@ def transform_ct_payload(event):
 
 
 def delete_timesheet(worked_shift_id):
+    """
+    Delete a timesheet from Everee API.
+
+    Args:
+        worked_shift_id: The Everee worked shift ID to delete
+
+    Returns:
+        requests.Response: The API response object
+    """
     try:
-        print('Action type/mehtod: delete')
         api_token = os.environ.get('EVEREE_API_TOKEN', 'sk_sDxamCz6Ea5JZvmMKyhKkg0DxwsHcp8V')
         tenant_id = os.environ.get('TENANT_ID', '1503')
 
@@ -340,45 +346,119 @@ def delete_timesheet(worked_shift_id):
                 }
 
         response = requests.delete(url, headers=headers)
-        print('CUSTOM INFO: API response: ', response.status_code)
+        logger.info("CUSTOM INFO: API response status: %s", response.status_code)
         if response.status_code == 204:
-            print(f"Custom INFO: Everee timesheet deleted successfully for {worked_shift_id}")
-            return response.status_code
+            logger.info("Custom INFO: Everee timesheet deleted successfully for %s", worked_shift_id)
+        elif response.status_code == 404:
+            logger.warning("Custom INFO: Everee timesheet not found for worked_shift_id: %s", worked_shift_id)
+        elif response.status_code == 400:
+            logger.warning("Custom INFO: Response for Everee timesheet for %s", response.json().get('error_message'))
+        return response
     except Exception as ex:
-        logger.error('Custom ERROR(API): while deleting timesheet through api:  ', ex)
+        logger.exception('Custom ERROR(API): while deleting timesheet through api:  ', ex)
+        raise
 
 
 def process_delete(ct_payload_df):
     """
-    Update timesheet through API
+    Delete timesheet through API.
+
+    Args:
+        ct_payload_df: DataFrame containing timesheet information including ct_time_activity_id
+
+    Returns:
+        requests.Response or None: Response object if deletion attempted, None if no record found in DB
     """
     try:
-        print("Processing Delete")
+        logger.info("CUSTOM INFO: Processing Delete")
 
         # extract ct time activity id from ct payload
-        ct_time_activity_id = str(ct_payload_df['ct_time_activity_id'][0])
+        ct_time_activity_id = ct_payload_df.get('ct_time_activity_id').item()
+        if ct_time_activity_id is not None:
+            query = f"""
+                SELECT distinct worker_id, ct_time_activity_id, worked_shift_id, load_dt
+                FROM operations.webhook_everee_timesheet
+                where ct_time_activity_id = '{ct_time_activity_id}'
+                ORDER BY load_dt DESC LIMIT 1
+                """
+            everee_df = retrieve_from_db(query)
 
-        query = f"""
-            SELECT distinct worker_id, ct_time_activity_id, worked_shift_id, load_dt
-            FROM operations.webhook_everee_timesheet
-            where ct_time_activity_id = '{ct_time_activity_id}'
-            ORDER BY load_dt DESC LIMIT 1
-            """
-        everee_df = retrieve_from_db(query)
-        if not everee_df.empty:
-            worked_shift_id = str(everee_df['worked_shift_id'][0])
-            delete_response = delete_timesheet(worked_shift_id)
-            return delete_response
+            if not everee_df.empty:
+                worked_shift_id = everee_df.get('worked_shift_id').item()
+                delete_response = delete_timesheet(worked_shift_id)
+                ct_payload_df['worked_shift_id'] = worked_shift_id
+                return delete_response, ct_payload_df
+            else:
+                logger.info("Custom Info(DB): No Everee timesheet found for ct_time_activity_id: %s in database. Skipping...", ct_time_activity_id)
+
+                return None
     except Exception as ex:
-        logger.error(ex)
+        logger.exception(ex)
+        raise
 
 
 def process_delete_response(response, ct_payload_df):
-    # load datetime
+    """
+    Process delete response and return DataFrame with required columns.
+    Handles cases where worked_shift_id might not be present in the payload.
+    """
+    # Add worked_shift_id column if it doesn't exist (set to ct_time_activity_id + '_Null')
+    if 'worked_shift_id' not in ct_payload_df.columns:
+        ct_payload_df['worked_shift_id'] = ct_payload_df['ct_time_activity_id'].item() + '_' + 'Null'
+
     ct_cols_needed = ['worked_shift_id','worker_id','external_worker_id', 'full_name', 'ct_time_activity_id',
                       'everee_action_type', 'event_type', 'note']
     df = ct_payload_df[ct_cols_needed]
     return df
+
+
+def handle_delete_action(ct_payload_df: pd.DataFrame):
+    """
+    Handle delete action for Everee timesheet from API to Database processing.
+    """
+    try:
+        delete_shift_res = process_delete(ct_payload_df)
+        # retrieve response data
+        delete_res = delete_shift_res[0]
+        # retrieve processed df
+        delete_df = delete_shift_res[1]
+        if delete_res.status_code == 204:
+            # process and store in db to track status of deletion attempt
+            everee_timesheet = process_res(delete_res, delete_df)
+            # standardize column names
+            everee_timesheet.columns = [standardize_column_name(col) for col in everee_timesheet.columns]
+            # insert into db
+            everee_timesheet_sts = insert_to_db(everee_timesheet, schema="operations", table_name="webhook_everee_timesheet", business_key="worked_shift_id")
+            return everee_timesheet_sts
+        elif delete_res.status_code != 204:
+            # process and store in db to track status of deletion attempt
+            everee_timesheet = process_res(delete_res, delete_df)
+            # standardize column names
+            everee_timesheet.columns = [standardize_column_name(col) for col in everee_timesheet.columns]
+            # insert into db
+            everee_timesheet_sts = insert_to_db(everee_timesheet, schema="operations", table_name="webhook_everee_timesheet", business_key="worked_shift_id")
+            return everee_timesheet_sts
+        else:
+            return None
+    except Exception as ex:
+        logger.exception(ex)
+
+
+def handle_create_action(payload: dict, ct_payload_df: pd.DataFrame):
+    """
+    Handle create action for Everee timesheet from API to Database processing.
+    """
+    try:
+        logger.info("CUSTOM INFO: Processing create timesheet")
+        create_shift_res = everee_create_shift(payload=payload)
+        everee_timesheet = process_res(create_shift_res, ct_payload_df)
+        everee_timesheet_sts = insert_to_db(everee_timesheet, schema="operations", table_name="webhook_everee_timesheet", business_key="worked_shift_id")
+        if everee_timesheet_sts is not None:
+            return everee_timesheet_sts
+        else:
+            return None
+    except Exception as ex:
+        logger.exception(ex)
 
 
 def insert_to_db(df, schema=None, table_name=None, business_key=None) -> Any:
@@ -387,30 +467,32 @@ def insert_to_db(df, schema=None, table_name=None, business_key=None) -> Any:
 
     Parameters:
         df (DataFrame): The DataFrame to be loaded into the database.
-        db_user (str): Database username.
-        db_password (str): Database password.
-        endpoint (str): Database endpoint URL.
-        db_name (str): Name of the target database.
         schema (str): Database schema name.
         table_name (str): Target table name in the database.
         replace_db (bool): If True, replaces the table contents; if False, appends data.
 
     Returns:
-        int: Number of rows inserted, or -1 if an error occurs.
+        bool: True if upsert succeeded, False if skipped or error.
     """
     try:
         # Connect to database
-        engine = db_connection(DB_USER=PG_DB_USER, DB_PASSWORD=PG_DB_PASSWORD, ENDPOINT=PG_ENDPOINT, DB_NAME=PG_DB_NAME, db_type='POSTGRESQL')
+        engine = db_connection(DB_USER=PG_DB_USER, DB_PASSWORD=PG_DB_PASSWORD, ENDPOINT=PG_ENDPOINT, DB_NAME=PG_DB_NAME, db_type='POSTGRESQL', PORT=PG_PORT)
 
         # Execute the query
         db_query_manager = DB_QUERY_MANAGER(engine=engine)
 
-        # Perform a batch upsert using 'time_activity_id' as the unique identifier.
+        # Perform a batch upsert using business_key as the unique identifier.
         df_status = db_query_manager.batch_upsert(df=df, schema=schema, table=table_name, business_key=business_key)
+
+        # Log success message
+        if df_status:
+            logger.info("<===== Data Upserted Successfully Into DB =====>")
+        else:
+            logger.error("<xxxxx DB Upsert Operation Unsuccessful xxxxx>")
 
         return df_status
     except Exception as ex:
-        logger.error("Connection to database could not be made due to the following error: \n", ex)
+        logger.exception("Connection to database could not be made due to the following error: \n", ex)
         return False
 
 
@@ -420,7 +502,7 @@ def retrieve_from_db(query) -> Any:
     '''
     try:
         # Connect to database
-        engine = db_connection(DB_USER=PG_DB_USER, DB_PASSWORD=PG_DB_PASSWORD, ENDPOINT=PG_ENDPOINT, DB_NAME=PG_DB_NAME, db_type='POSTGRESQL')
+        engine = db_connection(DB_USER=PG_DB_USER, DB_PASSWORD=PG_DB_PASSWORD, ENDPOINT=PG_ENDPOINT, DB_NAME=PG_DB_NAME, db_type='POSTGRESQL', PORT=PG_PORT)
 
         # Execute the query
         db_query_manager = DB_QUERY_MANAGER(engine=engine)
@@ -432,7 +514,7 @@ def retrieve_from_db(query) -> Any:
         else:
             return pd.DataFrame()  # No records found, set df to None
     except Exception as ex:
-        logger.error(ex)
+        logger.exception(ex)
         return pd.DataFrame()
 
 
@@ -442,7 +524,7 @@ def update_sync_state(ct_timesheet_id: str) -> Optional[str]:
     """
     try:
         # Create a SQLAlchemy engine
-        engine = db_connection(DB_USER=PG_DB_USER, DB_PASSWORD=PG_DB_PASSWORD, ENDPOINT=PG_ENDPOINT, DB_NAME=PG_DB_NAME, db_type='POSTGRESQL')
+        engine = db_connection(DB_USER=PG_DB_USER, DB_PASSWORD=PG_DB_PASSWORD, ENDPOINT=PG_ENDPOINT, DB_NAME=PG_DB_NAME, db_type='POSTGRESQL', PORT=PG_PORT)
         # Execute the query
         db_query_manager = DB_QUERY_MANAGER(engine=engine)
         ct_timesheet_update_query = f"""
@@ -458,5 +540,5 @@ def update_sync_state(ct_timesheet_id: str) -> Optional[str]:
             logger.error('<xxxxx DB Update Operation Unsuccessful xxxxx>')
             return None
     except Exception as ex:
-        logger.error(ex)
+        logger.exception(ex)
         return None
