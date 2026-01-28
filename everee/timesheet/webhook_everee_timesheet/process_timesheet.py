@@ -4,23 +4,24 @@ import base64
 import hashlib
 import pandas as pd
 import re
-from sqlalchemy import create_engine, text
 from typing import Any
 import logging
 import warnings
-from utils import SCD2Manager, DB_QUERY_MANAGER, invoke_lambda_function
+from utils import DB_QUERY_MANAGER
 from db_utils import db_connection
 from typing import Optional
 
 logger = logging.getLogger(__name__)
+logger.setLevel(logging.INFO)
+
 warnings.filterwarnings("ignore")
 
 # POSTGRES CONFIG
-PG_ENDPOINT = os.getenv("PG_ENDPOINT")
-PG_PORT = os.getenv("PG_PORT")
-PG_DB_NAME = os.getenv("PG_DB_NAME")
-PG_DB_USER = os.getenv("PG_DB_USER")
-PG_DB_PASSWORD = os.getenv("PG_DB_PASSWORD")
+PG_ENDPOINT = os.environ.get("PG_ENDPOINT")
+PG_PORT = os.environ.get("PG_PORT")
+PG_DB_NAME = os.environ.get("PG_DB_NAME")
+PG_DB_USER = os.environ.get("PG_DB_USER")
+PG_DB_PASSWORD = os.environ.get("PG_DB_PASSWORD")
 
 
 # hash user data for sk
@@ -55,7 +56,7 @@ def everee_create_shift(payload: dict) -> Any:
 
     Returns:
         requests.Response: API response object
- 
+
     Raises:
         ValueError: If required environment variables are missing
         requests.RequestException: If API request fails
@@ -64,7 +65,7 @@ def everee_create_shift(payload: dict) -> Any:
         # Get required environment variables
         api_token = os.environ.get('EVEREE_API_TOKEN', 'sk_sDxamCz6Ea5JZvmMKyhKkg0DxwsHcp8V')
         tenant_id = os.environ.get('TENANT_ID', '1503')
-        
+
         if not api_token or not tenant_id:
             raise ValueError("Missing required environment variables: EVEREE_API_TOKEN and/or TENANT_ID")
 
@@ -90,7 +91,7 @@ def everee_create_shift(payload: dict) -> Any:
         url = "https://api.everee.com/api/v2/labor/timesheet/worked-shifts/epoch?correction-authorized=false"
         encoded_token = base64.b64encode(api_token.encode('utf8')).decode()
         headers = {
-            "accept": "application/json", 
+            "accept": "application/json",
             "x-everee-tenant-id": tenant_id,
             "Authorization": f"Basic {encoded_token}",
             "Content-Type": "application/json"
@@ -100,11 +101,11 @@ def everee_create_shift(payload: dict) -> Any:
         logger.info("Making Everee API request to create timesheet")
         response = requests.post(
             url,
-            json=timesheet_payload, 
+            json=timesheet_payload,
             headers=headers,
             timeout=30
         )
-        
+
         logger.info(f"Everee API request successful with status code: {response.status_code}")
         return response
 
