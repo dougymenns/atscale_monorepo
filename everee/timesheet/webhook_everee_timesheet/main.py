@@ -2,14 +2,9 @@ import os
 import pandas as pd
 import json
 import logging
-from process_timesheet import everee_create_shift
-from process_timesheet import process_res
 from process_timesheet import transform_ct_payload
-from process_timesheet import insert_to_db
-from process_timesheet import process_update
-from process_timesheet import update_timesheet
-from process_timesheet import standardize_column_name
-from process_timesheet import process_delete
+from process_timesheet import handle_delete_action
+from process_timesheet import handle_create_action
 from process_timesheet import update_sync_state
 from utils import invoke_lambda_function
 
@@ -31,42 +26,38 @@ def lambda_handler(event, context):
     everee_sync_state = payload.get('everee_sync_state', None)
     ct_timesheet_id = payload.get('ct_timesheet_id', None)
     try:
+        # handle create time sheet
         if payload.get('everee_action_type') == 'create':
-            create_shift_res = everee_create_shift(payload=payload)
-            everee_timesheet = process_res(create_shift_res, ct_payload_df)
-            insert_to_db(everee_timesheet, schema="operations", table_name="webhook_everee_timesheet", business_key="worked_shift_id")
+            everee_timesheet_create_sts = handle_create_action(payload, ct_payload_df)
+            if everee_timesheet_create_sts is None:
+                logger.warning("Couldn't complete delete action processing")
+        # handle update timesheet
         elif payload.get('everee_action_type') == 'update':
-            print("Updating shift in Everee")
-            delete_shift_res = process_delete(ct_payload_df)
-            if delete_shift_res in ["success", "bad request"]:
-                everee_timesheet = process_res(delete_shift_res, ct_payload_df)
-                everee_timesheet.columns = [standardize_column_name(col) for col in everee_timesheet.columns]
-                insert_to_db(everee_timesheet, schema="operations", table_name="webhook_everee_timesheet", business_key="worked_shift_id")
-                # re-submit
-                print("Resubmitting shift after deletion")
-                create_shift_res = everee_create_shift(payload=payload)
-                everee_timesheet = process_res(create_shift_res, ct_payload_df)
-                insert_to_db(everee_timesheet, schema="operations", table_name="webhook_everee_timesheet", business_key="worked_shift_id")
+            logger.info("Updating shift in Everee")
+            # handle timesheet deletion process from API to DB
+            everee_timesheet_del_sts = handle_delete_action(ct_payload_df)
+            # re-submit timesheet
+            if everee_timesheet_del_sts is not None:
+                logger.info("Resubmitting shift after deletion")
+                everee_timesheet_create_sts = handle_create_action(payload)
+                if everee_timesheet_create_sts is None:
+                    logger.warning("Couldn't complete delete action processing")
             else:
-                create_shift_res = everee_create_shift(payload=payload)
-                everee_timesheet = process_res(create_shift_res, ct_payload_df)
-                insert_to_db(everee_timesheet, schema="operations", table_name="webhook_everee_timesheet", business_key="worked_shift_id")
+                everee_timesheet_create_sts = handle_create_action(payload, ct_payload_df)
+                if everee_timesheet_create_sts is None:
+                    logger.warning("Couldn't complete delete action processing")
         # handle time off rejection or timesheet rejection
         elif (payload.get('everee_action_type') == 'update') and 'declined' in payload.get('event_type', ''):
-            delete_shift_res = process_delete(ct_payload_df)
-            if delete_shift_res == "success":
-                everee_timesheet = process_res(delete_shift_res, ct_payload_df)
-                everee_timesheet.columns = [standardize_column_name(col) for col in everee_timesheet.columns]
-                insert_to_db(everee_timesheet, schema="operations", table_name="webhook_everee_timesheet", business_key="worked_shift_id")
+            # handle timesheet deletion process from API to DB
+            everee_timesheet_del_sts = handle_delete_action(ct_payload_df)
         # handle delete action in everee
         elif payload.get('everee_action_type') == 'delete':
-            delete_shift_res = process_delete(ct_payload_df)
-            if delete_shift_res == "success":
-                everee_timesheet = process_res(delete_shift_res, ct_payload_df)
-                everee_timesheet.columns = [standardize_column_name(col) for col in everee_timesheet.columns]
-                insert_to_db(everee_timesheet, schema="operations", table_name="webhook_everee_timesheet", business_key="worked_shift_id")
+            # handle timesheet deletion process from API to DB
+            everee_timesheet_del_sts = handle_delete_action(ct_payload_df)
+            if everee_timesheet_del_sts is None:
+                logger.warning("Couldn't complete delete action processing")
         else:
-            print("No valid everee_action_type found in payload")
+            logger.warning("No valid everee_action_type found in payload")
 
         # if the sync state is scheduled and ct_timesheet_id is present, update the sync state and invoke eventbridge lambda to delete schedule
         if everee_sync_state in ["SCHEDULED", "DELETE"] and ct_timesheet_id is not None:
