@@ -30,7 +30,7 @@ def lambda_handler(event, context):
         if payload.get('everee_action_type') == 'create':
             everee_timesheet_create_sts = handle_create_action(payload, ct_payload_df)
             if everee_timesheet_create_sts is None:
-                logger.warning("Couldn't complete delete action processing")
+                logger.warning("CUSTOM WARNING: Couldn't complete delete action processing due to no timesheet found. No action needed")
         # handle update timesheet
         elif payload.get('everee_action_type') == 'update':
             logger.info("Updating shift in Everee")
@@ -39,13 +39,13 @@ def lambda_handler(event, context):
             # re-submit timesheet
             if everee_timesheet_del_sts is not None:
                 logger.info("Resubmitting shift after deletion")
-                everee_timesheet_create_sts = handle_create_action(payload)
+                everee_timesheet_create_sts = handle_create_action(payload, ct_payload_df)
                 if everee_timesheet_create_sts is None:
-                    logger.warning("Couldn't complete delete action processing")
+                    logger.warning("CUSTOM WARNING: Couldn't complete delete action processing due to no timesheet found. No action needed")
             else:
                 everee_timesheet_create_sts = handle_create_action(payload, ct_payload_df)
                 if everee_timesheet_create_sts is None:
-                    logger.warning("Couldn't complete delete action processing")
+                    logger.warning("CUSTOM WARNING: Couldn't complete delete action processing due to no timesheet found. No action needed")
         # handle time off rejection or timesheet rejection
         elif (payload.get('everee_action_type') == 'update') and 'declined' in payload.get('event_type', ''):
             # handle timesheet deletion process from API to DB
@@ -55,9 +55,9 @@ def lambda_handler(event, context):
             # handle timesheet deletion process from API to DB
             everee_timesheet_del_sts = handle_delete_action(ct_payload_df)
             if everee_timesheet_del_sts is None:
-                logger.warning("Couldn't complete delete action processing")
+                logger.warning("CUSTOM WARNING: Couldn't complete delete action processing due to no timesheet found. No action needed")
         else:
-            logger.warning("No valid everee_action_type found in payload")
+            logger.warning("CUSTOM WARNING: No valid everee_action_type found in payload")
 
         # if the sync state is scheduled and ct_timesheet_id is present, update the sync state and invoke eventbridge lambda to delete schedule
         if everee_sync_state in ["SCHEDULED", "DELETE"] and ct_timesheet_id is not None:
