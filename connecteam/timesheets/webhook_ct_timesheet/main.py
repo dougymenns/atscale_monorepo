@@ -42,6 +42,7 @@ def lambda_handler(event, context):
             ct_timesheet_df['everee_sync_state'] = ct_timesheet_df.apply(lambda x: determine_everee_sync_state(x), axis=1)
             # insert ct timesheet dataframe to db
             df_status = insert_ct_timesheet_to_db(ct_timesheet_df)
+            check_everee_timesheet_df = everee_timesheet_exist(ct_timesheet_df)
             if df_status:
                 # check if worker_details_df worker id for everee payload
                 if ct_timesheet_df['worker_id'].astype(bool).any() or ct_timesheet_df['external_worker_id'].astype(bool).any():
@@ -51,14 +52,15 @@ def lambda_handler(event, context):
                     everee_payload = json.loads(everee_payload_df)[0]
 
                     # add everee_sync_state to payload and trigger appropriate lambda function
-                    if everee_sync_state in ['SCHEDULED', 'DELETE'] and everee_timesheet_exist(ct_timesheet_df):
+                    if (everee_sync_state in ['SCHEDULED', 'DELETE']) and (not check_everee_timesheet_df.empty):
                         # schedule action based on everee_sync_state
                         if everee_sync_state == "DELETE":
                             everee_payload["schedule_action"] = "DELETE"
                             everee_payload["schedule_name"] = f"submit_timesheet_{everee_payload['ct_time_activity_id']}"
                         invoke_lambda_function(everee_payload, FUNCTION_NAME)
                         invoke_lambda_function(everee_payload, EVENTBRIDGE_FUNCTION_NAME)
-                    elif everee_sync_state in ['SCHEDULED', 'DELETE'] and not everee_timesheet_exist(ct_timesheet_df):
+                        # delete scheduled timesheet if everee_sync_state is DELETE and no everee_timesheet exist in db
+                    elif everee_sync_state in ['SCHEDULED', 'DELETE'] and  (check_everee_timesheet_df.empty):
                         # schedule action based on everee_sync_state
                         if everee_sync_state == "DELETE":
                             everee_payload["schedule_action"] = "DELETE"

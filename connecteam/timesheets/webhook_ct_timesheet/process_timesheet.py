@@ -1,8 +1,5 @@
 import os
-import requests
 import datetime
-import psycopg2
-import base64
 import hashlib
 import json
 import pandas as pd
@@ -11,11 +8,11 @@ import re
 import boto3
 import warnings
 import logging
-from sqlalchemy import create_engine, text
+from sqlalchemy import text
 from typing import Any
 from zoneinfo import ZoneInfo
 warnings.filterwarnings('ignore')
-from utils import SCD2Manager, DB_QUERY_MANAGER, invoke_lambda_function
+from utils import DB_QUERY_MANAGER
 from db_utils import db_connection
 
 logger = logging.getLogger(__name__)
@@ -50,7 +47,7 @@ def retrieve_from_db(query) -> Any:
     '''
     try:
         # Connect to database
-        engine = db_connection(DB_USER=PG_DB_USER, DB_PASSWORD=PG_DB_PASSWORD, ENDPOINT=PG_ENDPOINT, DB_NAME=PG_DB_NAME, db_type='POSTGRESQL')
+        engine = db_connection(DB_USER=PG_DB_USER, DB_PASSWORD=PG_DB_PASSWORD, ENDPOINT=PG_ENDPOINT, DB_NAME=PG_DB_NAME, db_type='POSTGRESQL', PORT=PG_PORT)
 
         # Execute the query
         db_query_manager = DB_QUERY_MANAGER(engine=engine)
@@ -81,30 +78,6 @@ def standardize_column_name(column_name):
 
     # Convert to lowercase for standard database naming
     return column_name.lower()
-
-
-def redshift_call_proc(DB_USER, DB_PASSWORD, ENDPOINT, DB_NAME, stored_procedure):
-    '''
-    call redshift stored procedure
-    '''
-    try:
-        # Create a SQLAlchemy engine
-        engine = db_connection(DB_USER, DB_PASSWORD, ENDPOINT, DB_NAME)
-        # Connect to the database using the engine
-        with engine.begin() as con:
-            sql_proc = f"call {stored_procedure}();"
-            # Execute the stored procedure
-            result = con.execute(text(sql_proc))
-            # Check if the stored procedure execution was successful
-            if isinstance(result.rowcount, int):
-                message = '<===== Procedure: Record Inserted Successfully Into Redshift =====>'
-                print(message)
-            else:
-                message = '<xxxxx Redshift Call Procedure Operation Unsuccessful xxxxx>'
-                print(message)
-    except Exception as ex:
-        logger.exception(ex)
-    return message
 
 
 # round time to nearest 5 minutes
@@ -166,6 +139,9 @@ def process_timesheet_data(response, round_time=True):
 
         # transforming time_off event
         elif df.get('activity_type').item() == "time_off":
+            # round timestamp to the nearest 5 minutes is not needed for time_off since it's entered manually on allowed/scheduled time
+            round_time = False
+            logger.info('CUSTOM INFO: Processing Time Off')
             start_timezone = df['start_timezone'][0]
             end_timezone = df['end_timezone'][0]
             df['event_timestamp'] = pd.to_datetime(df['event_timestamp'], unit='s')
@@ -176,7 +152,6 @@ def process_timesheet_data(response, round_time=True):
             df['shift_end_date'] = df['end_timestamp'].apply(lambda x: datetime.datetime.fromtimestamp(x, tz=ZoneInfo(end_timezone)).date())
             df['shift_start_time'] = df['start_timestamp'].apply(lambda x: datetime.datetime.fromtimestamp(x, tz=ZoneInfo(start_timezone)).strftime('%H:%M:%S'))
             df['shift_end_time'] = df['end_timestamp'].apply(lambda x: datetime.datetime.fromtimestamp(x, tz=ZoneInfo(end_timezone)).strftime('%H:%M:%S'))
-            # round timestamp to the nearest 5 minutes
             if round_time is True:
                 start_timestamp = int(df['start_timestamp'][0])
                 end_timestamp = int(df['end_timestamp'][0])
@@ -259,7 +234,7 @@ def everee_timesheet_payload(df):
 
     # set action_type to delete if event_type is delete
     if (df['event_type'].str.contains('delete').any() == True) or (df['event_type'].str.contains('declined').any() == True):
-        print("Custom INFO: Setting everee payload to delete/decline for delete event_type")
+        logger.info("Custom INFO: Setting everee payload to delete/decline type for delete event_type")
         # extract the cols needed for everee payload
         everee_cols = [
         'worker_id', 'external_worker_id', 'event_type', 'activity_type',
@@ -275,7 +250,7 @@ def everee_timesheet_payload(df):
         # add correction payment to next payroll payment
         everee_payload['correctionPaymentTimeframe'] = 'NEXT_PAYROLL_PAYMENT'
     else:
-        print("Custom INFO: Setting everee payload to create/edit for create/edit event_type")
+        logger.info("Custom INFO: Setting everee payload to create/edit type for create/edit event_type")
         everee_cols = [
         'worker_id', 'external_worker_id', 'start_timestamp', 'end_timestamp',
         'event_type', 'activity_type', 'full_name', 'time_activity_id', 'note',
@@ -300,17 +275,17 @@ def everee_timesheet_payload(df):
     return everee_payload
 
 
-def retrieve_worker_and_pay_details(df): 
+def retrieve_worker_and_pay_details(df):
     """
     Retrieve worker details from database
-    
+
     Args:
         df: DataFrame containing worker data
         DB_USER: Database username
-        DB_PASSWORD: Database password 
+        DB_PASSWORD: Database password
         ENDPOINT: Database endpoint
         DB_NAME: Database name
-        
+
     Returns:
         DataFrame with worker details or None if error occurs
     """
@@ -338,7 +313,7 @@ def retrieve_worker_and_pay_details(df):
                 if not worker_details_df.empty:
                     return worker_details_df
                 else:
-                    print(f"Custom WARNING(DB): No worker details found for user_id: {ct_user_id}, job_id: {job_id}")
+                    logger.info(f"Custom WARNING(DB): No worker details found for user_id: {ct_user_id}, job_id: {job_id}")
                     return pd.DataFrame()
 
         # handling time off events
@@ -362,9 +337,9 @@ def retrieve_worker_and_pay_details(df):
                         """
                 worker_details_df = retrieve_from_db(query)
                 if not worker_details_df.empty:
-                    print(f"Custom WARNING(DB): No worker details found for user_id: {ct_user_id}, time_off_policy_id: {time_off_id}")
                     return worker_details_df
                 else:
+                    logger.warning('CUSTOM WARNING(DB): Connecteam user_id or time_off_policy not found in database. Please check if the time_off policy ids and user_id in the databse are the latest with what is Connecteam')
                     return pd.DataFrame()
         else:
             ct_user_id = str(df['connecteam_user_id'][0])
@@ -424,7 +399,7 @@ def check_if_ct_exist(df):
 def everee_timesheet_exist(everee_payload: dict) -> pd.DataFrame:
     """Check if the Everee timesheet already exists in the database."""
     # Connect to database
-    engine = db_connection(DB_USER=PG_DB_USER, DB_PASSWORD=PG_DB_PASSWORD, ENDPOINT=PG_ENDPOINT, DB_NAME=PG_DB_NAME, db_type='POSTGRESQL')
+    engine = db_connection(DB_USER=PG_DB_USER, DB_PASSWORD=PG_DB_PASSWORD, ENDPOINT=PG_ENDPOINT, DB_NAME=PG_DB_NAME, db_type='POSTGRESQL', PORT=PG_PORT)
 
     # Execute the query
     db_query_manager = DB_QUERY_MANAGER(engine=engine)
@@ -454,16 +429,16 @@ def derive_everee_action_type(df):
         everee_sync_state = ct_extist_df.get('everee_sync_state', None)
         # if ct_extist_df and event type = delete then set action_type is delete
         if (df['event_type'].str.contains('delete').any() == True) or (df['event_type'].str.contains('declined').any() == True):
-            print("Custom INFO: Setting everee action type to delete since time has been deleted or declined in Connecteam")
+            logger.info("Custom INFO: Setting everee action type to delete since time has been deleted or declined in Connecteam")
             df['everee_action_type'] = 'delete'
             df['everee_sync_state'] = everee_sync_state
         # if ct_extist_df and event type = edit and timesheet_sk then set action_type is update
         elif ((df['event_type'].str.contains('delete').any() == False) or (df['event_type'].str.contains('declined').any() == False)):
-            print("Custom INFO: Setting everee action type to update as existing record found in db")
+            logger.info("Custom INFO: Record found - Setting everee action type to update")
             df['everee_action_type'] = 'update'
             df['everee_sync_state'] = everee_sync_state
     else:
-        print("Custom INFO: Setting everee action type to create as no existing record found in db")
+        logger.info("Custom INFO: Record not found - Setting everee action type to create")
         df['everee_action_type'] = 'create'
         df['everee_sync_state'] = None
     return df
