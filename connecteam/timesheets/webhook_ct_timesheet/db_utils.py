@@ -1,5 +1,9 @@
+import logging
+from typing import Optional, Union
 from sqlalchemy import create_engine, text
 from sqlalchemy.engine import Engine
+
+logger = logging.getLogger(__name__)
 
 
 def db_connection(
@@ -7,7 +11,8 @@ def db_connection(
     DB_PASSWORD: str,
     ENDPOINT: str,
     DB_NAME: str,
-    db_type: str = 'POSTGRESQL'
+    db_type: str = 'POSTGRESQL',
+    PORT: Optional[Union[str, int]] = None,
 ) -> Engine:
     """
     Create a SQLAlchemy database engine for PostgreSQL or Amazon Redshift.
@@ -50,9 +55,11 @@ def db_connection(
     """
     try:
         if db_type.upper() == 'POSTGRESQL':
-            db_uri = f'postgresql://{DB_USER}:{DB_PASSWORD}@{ENDPOINT}:5432/{DB_NAME}'
+            port = int(PORT) if PORT is not None else 5432
+            db_uri = f'postgresql://{DB_USER}:{DB_PASSWORD}@{ENDPOINT}:{port}/{DB_NAME}'
         elif db_type.upper() == 'REDSHIFT':
-            db_uri = f'redshift+psycopg2://{DB_USER}:{DB_PASSWORD}@{ENDPOINT}:5439/{DB_NAME}'
+            port = int(PORT) if PORT is not None else 5439
+            db_uri = f'redshift+psycopg2://{DB_USER}:{DB_PASSWORD}@{ENDPOINT}:{port}/{DB_NAME}'
         else:
             raise ValueError(f"CUSTOM INFO: <xxxxx Unsupported database type: '{db_type}'. Use 'POSTGRESQL' or 'REDSHIFT'. xxxxx>")
 
@@ -61,5 +68,5 @@ def db_connection(
         return engine
 
     except Exception as ex:
-        logger.error(f"CUSTOM INFO: <xxxxx Failed to create database engine for {db_type.upper()}: {ex} xxxxx>")
+        logger.exception(f"CUSTOM INFO: <xxxxx Failed to create database engine for {db_type.upper()}: {ex} xxxxx>")
         raise
