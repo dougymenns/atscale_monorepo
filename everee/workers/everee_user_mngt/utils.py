@@ -82,12 +82,15 @@ class SCD2Manager:
     # ----------------------------------------------------------------------
     def _normalize_value(self, v):
         """Convert pandas/empty values to DB NULL."""
-        if v is None:
+
+        # catches None, NaN, NaT, pandas NA
+        if pd.isna(v):
             return None
-        if isinstance(v, float) and math.isnan(v):  # handles np.nan
-            return None
+
+        # catch empty strings
         if isinstance(v, str) and v.strip() == "":
             return None
+
         return v
 
     def _insert_new_record(self, conn, row_dict: dict):
@@ -213,7 +216,7 @@ class DB_QUERY_MANAGER:
                     logger.info("<===== Procedure: Record Inserted Successfully Into DB =====>")
                     return True
                 else:
-                    logger.info("<xxxxx CUSTOM INFO: No Data fetched from database. xxxxx>")
+                    logger.warning("<xxxxx CUSTOM INFO: No Data fetched from database. xxxxx>")
                 return False
 
         except Exception as ex:
@@ -237,6 +240,5 @@ def invoke_lambda_function(payload=None, FUNCTION_NAME=None):
         )
         logger.info(f'{FUNCTION_NAME}: invoked with payload: {payload}')
     except Exception as ex:
-        logger.exception(ex)
-        logger.info(f'Could not pass {payload} due to {ex}')
+        logger.exception(f'Could not pass {payload} due to {ex}')
     return

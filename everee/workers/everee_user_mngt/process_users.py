@@ -104,8 +104,6 @@ def transfrom_user(user_df):
 
         # List all columns you want to clean
         numeric_cols = ['emp_id', 'everee_id', 'company_id', 'approval_grp_id']
-        bool_cols = ['onboarding_complete', 'ot_eligible']
-
         for col in numeric_cols:
             if col in user.columns:
                 user[col] = (pd.to_numeric(user[col], errors='coerce').round().astype('Int64'))
@@ -125,9 +123,26 @@ def transfrom_user(user_df):
         user['curr_flg'] = 'Y'
         user['everee_sk'] = user.astype(str).apply(compute_sha224, axis=1)
 
+        # replace empty strings with None for db compatibility
+        user = user.replace(r'^\s*$', None, regex=True)
+
     except Exception as ex:
         logger.exception(ex)
     return user
+
+
+def normalize_value(self, v):
+    """Convert pandas/empty values to DB NULL."""
+
+    # catches None, NaN, NaT, pandas NA
+    if pd.isna(v):
+        return None
+
+    # catch empty strings
+    if isinstance(v, str) and v.strip() == "":
+        return None
+
+    return v
 
 
 def everee_api_request(worker_id, api_token, tenant_id):
