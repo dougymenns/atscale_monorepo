@@ -8,6 +8,7 @@ from process_timesheet import retrieve_worker_and_pay_details
 from process_timesheet import derive_everee_action_type
 from process_timesheet import determine_everee_sync_state
 from process_timesheet import everee_timesheet_exist
+from process_timesheet import check_all_day_time_off_and_notify
 from utils import invoke_lambda_function
 
 logger = logging.getLogger(__name__)
@@ -33,6 +34,14 @@ def lambda_handler(event, context):
 
         # retrieve other necessary worker details from db
         worker_details_df = retrieve_worker_and_pay_details(df)
+
+        # check if time off is all day and send slack notification to update to time range in CT
+        if event['activityType'] == 'time_off':
+            check_all_day_time_off_and_notify(event, worker_details_df)
+            return {
+                    'statusCode': 200,
+                    'body': 'lambda successfully executed'
+                }
 
         # check if worker_details_df has data
         if not worker_details_df.empty:

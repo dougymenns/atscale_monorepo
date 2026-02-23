@@ -12,10 +12,12 @@ from sqlalchemy import text
 from typing import Any
 from zoneinfo import ZoneInfo
 warnings.filterwarnings('ignore')
-from utils import DB_QUERY_MANAGER
+from utils import DB_QUERY_MANAGER, SlackNotificationManager
 from db_utils import db_connection
 
 logger = logging.getLogger(__name__)
+logger.setLevel(logging.INFO)
+
 
 # POSTGRES CONFIG
 PG_ENDPOINT = os.getenv("PG_ENDPOINT")
@@ -100,28 +102,56 @@ def round_to_nearest_5_minutes(utc_timestamp):
     return rounded_timestamp
 
 
+def transform_time_activity_columns(response) -> pd.DataFrame:
+    """
+    Convert time activity API response JSON into a cleaned dataframe.
+    """
+
+    df = pd.json_normalize(response)
+
+    # standardize column names
+    df.columns = [standardize_column_name(col) for col in df.columns]
+    df.columns = df.columns.str.replace("time_activity_", "", regex=False)
+
+    # rename columns
+    df = df.rename(columns={
+        "id": "time_activity_id",
+        "user_id": "connecteam_user_id",
+        "event_timestamp": "event_timestamp",
+        "duration_value": "time_off_duration",
+        "duration_units": "time_off_duration_units",
+        "is_all_day": "time_off_is_all_day",
+        "policy_type_id": "time_off_policy_type_id",
+    })
+
+    return df
+
+
+def check_all_day_time_off_and_notify(response: dict, worker_details_df: pd.DataFrame) -> Any:
+    """Check if time off is all day and send slack notification to update to time range in CT."""
+    try:
+        is_all_day_sts = response['timeActivity'].get('isAllDay', None)
+        if is_all_day_sts is True:
+            df = transform_time_activity_columns(response)
+            start_timezone = df['start_timezone'][0]
+            df['shift_start_date'] = df['start_timestamp'].apply(lambda x: datetime.datetime.fromtimestamp(x, tz=ZoneInfo(start_timezone)).date())
+            if not worker_details_df.empty:
+                # send slack notification to update time off to time range in CT
+                slack_manager = SlackNotificationManager()
+                slack_msg_title = "Time Off Alert: All Day Time Off Detected. Please update to time range in Connecteam."
+                slack_msg_payload = {"text": f"{slack_msg_title}\nFull Name: {worker_details_df['full_name'][0]}\nPTO Date: {df['shift_start_date'][0]}"}
+                logger.info(f"Custom INFO: Sending slack notification for all day time off with payload: {slack_msg_payload} and skipping processing of this time off event until it's updated to time range in Connecteam")
+                slack_manager.send_slack_notification(slack_msg_payload)
+    except Exception as ex:
+        logger.exception(f"Error processing all day time off slack notification: {ex}")
+
+
 def process_timesheet_data(response, round_time=True):
     '''
     Transform connecteam timesheet webhook data
     '''
     try:
-        # Convert json to dataframe
-        df = pd.json_normalize(response)
-
-        # Create a DataFrame from the updated dictionary
-        df.columns = [standardize_column_name(col) for col in df.columns]
-        df.columns = df.columns.str.replace('time_activity_', '')
-
-        # rename the columns
-        df.rename(columns={
-            'id': 'time_activity_id',
-            'user_id': 'connecteam_user_id',
-            'event_timestamp': 'event_timestamp',
-            'duration_value': 'time_off_duration',
-            'duration_units': 'time_off_duration_units',
-            'is_all_day': 'time_off_is_all_day',
-            'policy_type_id': 'time_off_policy_type_id',
-            }, inplace=True)
+        df = transform_time_activity_columns(response)
         # transform data if delete
         if (df['event_type'].str.contains('delete').any() == True) or (df['event_type'].str.contains('declined').any() == True):
             df['event_timestamp'] = pd.to_datetime(df['event_timestamp'], unit='s')
@@ -139,6 +169,7 @@ def process_timesheet_data(response, round_time=True):
 
         # transforming time_off event
         elif df.get('activity_type').item() == "time_off":
+
             # round timestamp to the nearest 5 minutes is not needed for time_off since it's entered manually on allowed/scheduled time
             round_time = False
             logger.info('CUSTOM INFO: Processing Time Off')

@@ -1,6 +1,7 @@
 
 from typing import List, Optional
 import pandas as pd
+import requests
 from sqlalchemy.engine import Engine
 from sqlalchemy import text
 import logging
@@ -181,7 +182,7 @@ class DB_QUERY_MANAGER:
                 return df
 
         except Exception as ex:
-            logger.error(f"CUSTOM INFO: <xxxxx Could not fetch from database due to : {ex} xxxxx>")
+            logger.exception(f"CUSTOM INFO: <xxxxx Could not fetch from database due to : {ex} xxxxx>")
             return pd.DataFrame()
 
     def stored_procedure(self, query: str) -> bool:
@@ -292,7 +293,7 @@ class DB_QUERY_MANAGER:
             logger.error(
                 f"CUSTOM INFO: <xxxxx Could not complete batch_upsert due to: {ex} xxxxx>"
             )
-            return False
+            return False 
 
 
 # function to invoke lambda function to update user details
@@ -314,3 +315,39 @@ def invoke_lambda_function(payload=None, FUNCTION_NAME=None):
         logger.error(ex)
         print(f'Could not pass {payload} due to ', ex)
     return
+
+
+class SlackNotificationManager:
+
+    @staticmethod
+    def send_slack_notification(payload):
+        """
+        Send slack message to the connecteam channel
+        """
+        url = os.getenv("CT_TIME_MGMT_SLACK_URL")
+
+        if not url:
+            raise ValueError("SLACK_URL environment variable is not set")
+
+        headers = {"Content-Type": "application/json"}
+
+        try:
+            response = requests.post(url, json=payload, headers=headers, timeout=10)
+
+            success = response.status_code == 200
+            message = "Message sent successfully" if success else response.text
+
+            return {
+                "success": success,
+                "status_code": response.status_code,
+                "message": message,
+            }
+
+        except requests.RequestException as ex:
+            logger.error(f"Slack request failed: {ex}")
+
+            return {
+                "success": False,
+                "status_code": None,
+                "message": str(ex),
+            }
