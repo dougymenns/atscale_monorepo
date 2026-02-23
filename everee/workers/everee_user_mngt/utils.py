@@ -1,9 +1,9 @@
 
+import math
 from typing import List, Optional
 import pandas as pd
-import requests
 from sqlalchemy.engine import Engine
-from sqlalchemy import text
+from sqlalchemy import text, insert, MetaData, Table
 import logging
 import datetime
 import boto3
@@ -80,23 +80,36 @@ class SCD2Manager:
     # ----------------------------------------------------------------------
     # INSERT NEW RECORD
     # ----------------------------------------------------------------------
+    def _normalize_value(self, v):
+        """Convert pandas/empty values to DB NULL."""
+
+        # catches None, NaN, NaT, pandas NA
+        if pd.isna(v):
+            return None
+
+        # catch empty strings
+        if isinstance(v, str) and v.strip() == "":
+            return None
+
+        return v
 
     def _insert_new_record(self, conn, row_dict: dict):
         """Insert a new version record."""
+
+        # Clean incoming values
+        row_dict = {k: self._normalize_value(v) for k, v in row_dict.items()}
+
         # Add SCD2 system columns
         row_dict[self.eff_strt_dt] = datetime.datetime.now().strftime('%Y-%m-%d')
         row_dict[self.eff_end_dt] = "9999-12-31"
         row_dict[self.curr_flg] = "Y"
 
-        cols = ",".join(row_dict.keys())
-        params = ",".join([f":{c}" for c in row_dict.keys()])
+        # Reflect the table
+        metadata = MetaData(schema=self.schema)
+        table = Table(self.table, metadata, autoload_with=conn)
 
-        insert_sql = f"""
-            INSERT INTO {self.schema}.{self.table} ({cols})
-            VALUES ({params});
-        """
-
-        conn.execute(text(insert_sql), row_dict)
+        stmt = insert(table).values(**row_dict)
+        conn.execute(stmt)
 
     # ----------------------------------------------------------------------
     # PUBLIC METHOD
@@ -146,7 +159,7 @@ class SCD2Manager:
             return True
 
         except Exception as ex:
-            logger.error(f"<xxxxx SCD2 ERROR: {ex} xxxxx>", exc_info=True)
+            logger.exception(f"<xxxxx SCD2 ERROR: {ex} xxxxx>", exc_info=True)
             return False
 
 
@@ -174,10 +187,10 @@ class DB_QUERY_MANAGER:
                 query_res = conn.execute(text(query)).fetchall()
                 if query_res is not None:
                     df = pd.DataFrame(query_res)
-                    print(f"<===== CUSTOM INFO: Data fetched successfully from database with shape {df.shape}. =====>")
+                    logger.info(f"<===== CUSTOM INFO: Data fetched successfully from database with shape {df.shape}. =====>")
                     return pd.DataFrame(query_res)
                 else:
-                    print(f"<===== CUSTOM INFO: No Data fetched from database. =====>")
+                    logger.info(f"<===== CUSTOM INFO: No Data fetched from database. =====>")
                     df = pd.DataFrame()
                 return df
 
@@ -200,100 +213,15 @@ class DB_QUERY_MANAGER:
                 # Execute query and fetch into DataFrame
                 query_res = conn.execute(text(query))
                 if query_res is not None:
-                    print("<===== Procedure: Record Inserted Successfully Into DB =====>")
+                    logger.info("<===== Procedure: Record Inserted Successfully Into DB =====>")
                     return True
                 else:
-                    print("<xxxxx CUSTOM INFO: No Data fetched from database. xxxxx>")
+                    logger.warning("<xxxxx CUSTOM INFO: No Data fetched from database. xxxxx>")
                 return False
 
         except Exception as ex:
-            logger.error(f"CUSTOM INFO: <xxxxx Could not complete running stored procedure due to : {ex} xxxxx>")
+            logger.exception(f"CUSTOM INFO: <xxxxx Could not complete running stored procedure due to : {ex} xxxxx>")
             return False
-
-    def execute_db_dml(self, query: str) -> bool:
-        """
-        Execute Data Manipulation Language (DML) queries (INSERT, UPDATE, DELETE).
-        The transaction is managed by the 'begin()' context manager.
-
-        Parameters:
-            query (str): SQL query string to execute.
-
-        Returns:
-            bool: True if the query executed successfully, False otherwise.
-        """
-        try:
-            with self.engine.begin() as conn:
-                # Execute the DML query
-                result = conn.execute(text(query))
-
-                # Check if the execution was successful and get row count
-                row_count = result.rowcount
-
-                if row_count >= 0:
-                    print(f"<===== CUSTOM INFO: DML executed successfully. Rows affected: {row_count}. =====>")
-                    return True
-                else:
-                    print(f"<===== CUSTOM INFO: DML executed, but result was unexpected. =====>")
-                    return False
-
-        except Exception as ex:
-            # The transaction is automatically rolled back upon exception
-            logger.error(f"CUSTOM INFO: <xxxxx Could not execute DML in database due to : {ex} xxxxx>")
-            return False
-
-    def batch_upsert(self, df, schema: str, table: str, business_key: str):
-        """
-        Generic batch UPSERT for Postgres using ON CONFLICT DO UPDATE.
-        No explicit column naming required.
-
-        df: pandas DataFrame
-        schema, table: target table
-        business_key: column that is the unique constraint/index
-        """
-
-        if df.empty:
-            logger.warning("batch_upsert called with empty DataFrame.")
-            return False
-
-        try:
-            # Convert DF rows
-            rows = df.to_dict(orient="records")
-
-            # All columns
-            columns = df.columns.tolist()
-
-            # Build insert column list
-            col_str = ",".join([f'"{c}"' for c in columns])
-            param_str = ",".join([f":{c}" for c in columns])
-
-            # Columns to update = all except business_key
-            update_cols = [c for c in columns if c != business_key]
-
-            # Dynamically create update SET clause: col = EXCLUDED.col
-            update_str = ",".join([f'"{c}" = EXCLUDED."{c}"' for c in update_cols])
-
-            # Final UPSERT SQL
-            upsert_sql = text(
-                f"""
-                INSERT INTO {schema}.{table} ({col_str})
-                VALUES ({param_str})
-                ON CONFLICT ("{business_key}")
-                DO UPDATE
-                SET {update_str};
-                """
-            )
-
-            # Execute in a single transaction
-            with self.engine.begin() as conn:
-                conn.execute(upsert_sql, rows)
-
-            return True
-
-        except Exception as ex:
-            logger.error(
-                f"CUSTOM INFO: <xxxxx Could not complete batch_upsert due to: {ex} xxxxx>"
-            )
-            return False 
 
 
 # function to invoke lambda function to update user details
@@ -310,44 +238,7 @@ def invoke_lambda_function(payload=None, FUNCTION_NAME=None):
             Payload=json.dumps(payload),
             LogType='Tail'
         )
-        print(f'{FUNCTION_NAME}: invoked with payload: {payload}')
+        logger.info(f'{FUNCTION_NAME}: invoked with payload: {payload}')
     except Exception as ex:
-        logger.error(ex)
-        print(f'Could not pass {payload} due to ', ex)
+        logger.exception(f'Could not pass {payload} due to {ex}')
     return
-
-
-class SlackNotificationManager:
-
-    @staticmethod
-    def send_slack_notification(payload):
-        """
-        Send slack message to the connecteam channel
-        """
-        url = os.getenv("CT_TIME_MGMT_SLACK_URL")
-
-        if not url:
-            raise ValueError("SLACK_URL environment variable is not set")
-
-        headers = {"Content-Type": "application/json"}
-
-        try:
-            response = requests.post(url, json=payload, headers=headers, timeout=10)
-
-            success = response.status_code == 200
-            message = "Message sent successfully" if success else response.text
-
-            return {
-                "success": success,
-                "status_code": response.status_code,
-                "message": message,
-            }
-
-        except requests.RequestException as ex:
-            logger.error(f"Slack request failed: {ex}")
-
-            return {
-                "success": False,
-                "status_code": None,
-                "message": str(ex),
-            }
