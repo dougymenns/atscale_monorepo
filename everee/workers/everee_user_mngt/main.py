@@ -72,8 +72,9 @@ def lambda_handler(event, context):
             if scd2_status:
                 db_query_manager = DB_QUERY_MANAGER(engine=engine)
                 ct_user_df = db_query_manager.fetch_from_db(f"""
-                                    SELECT * FROM operations.dim_ct_users where everee_wkr_id = '{worker_id}' and ftn_id = '{ext_id}';
+                                    SELECT distinct worker_id,ext_id FROM operations.dim_ct_users where everee_wkr_id = '{worker_id}' and ftn_id = '{ext_id}';
                                     """)
+                ct_user_df = ct_user_df.drop_duplicates(subset=['worker_id', 'ext_id'], keep='last')
                 if not ct_user_df.empty:
                     stored_proc_query = f"""CALL operations.sync_single_worker('{worker_id}');"""
                     db_query_manager.stored_procedure(stored_proc_query)
