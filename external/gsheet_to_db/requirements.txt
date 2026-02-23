@@ -1,0 +1,10 @@
+gspread==6.2.1
+pandas==1.5.3
+numpy==1.26.4
+SQLAlchemy<2.0.0
+psycopg2-binary>=2.9.9
+google-api-core==2.19.1
+google-auth==2.30.0
+google-auth-httplib2==0.2.0
+google-auth-oauthlib==1.2.0
+googleapis-common-protos==1.63.2

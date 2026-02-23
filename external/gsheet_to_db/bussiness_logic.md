@@ -1,0 +1,1 @@
+- you will have to change the override rate column format type in the google sheet from currency to number in order to keep the table in our database. 

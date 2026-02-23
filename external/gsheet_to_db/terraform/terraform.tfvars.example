@@ -1,0 +1,20 @@
+# Copy to terraform.tfvars and fill in. Do not commit terraform.tfvars.
+
+# Postgres
+PG_DB_NAME     = "your_db"
+PG_DB_USER     = "your_user"
+PG_DB_PASSWORD = "your_password"
+PG_ENDPOINT    = "your-host.region.rds.amazonaws.com"
+PG_PORT        = "5432"
+
+# Google Sheets (service account JSON fields)
+GOOGLE_CLIENT_EMAIL = "name@project.iam.gserviceaccount.com"
+GOOGLE_CLIENT_ID    = "123456789"
+GOOGLE_PRIVATE_KEY  = "-----BEGIN PRIVATE KEY-----\n...\n-----END PRIVATE KEY-----\n"
+GOOGLE_PROJECT_ID   = "your-gcp-project"
+GOOGLE_SHEET_ID     = "1abc...xyz"  # from sheet URL
+
+# Optional: defaults when Lambda event omits worksheet_name / table_name
+WORKSHEET_NAME = "time_off_rates"
+TARGET_SCHEMA  = "operations"
+TARGET_TABLE   = "time_off_rates"
